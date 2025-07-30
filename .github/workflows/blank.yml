@@ -1,10 +1,10 @@
-# 文件名: .github/workflows/convert.yml (最终修复版 v2)
+# 文件名: .github/workflows/convert.yml (最终修复版 v3)
 
 name: Convert Gist YAML to Surge Format
 
 on:
   schedule:
-    - cron: '0 */1 * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
@@ -29,26 +29,18 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
-      # --- 步骤 1: 可靠地获取 Gist 文件并执行转换 ---
       - name: Fetch, Convert, and Set Output
         run: |
-          # 1. 使用 gh api 可靠地获取 Gist 文件的下载 URL
-          # 这比 gh gist view 更稳定，并且能避免所有参数问题
           YAML_URL=$(gh api "gists/${{ env.GIST_ID }}" --jq ".files[\"${{ env.YAML_FILENAME }}\"].raw_url")
-
           if [ -z "$YAML_URL" ] || [ "$YAML_URL" == "null" ]; then
             echo "Error: Could not find file '${{ env.YAML_FILENAME }}' in Gist or get its URL."
             exit 1
           fi
-
           echo "Found YAML file URL: $YAML_URL"
-          
-          # 2. 下载文件内容
           YAML_CONTENT=$(curl -sL "$YAML_URL")
 
-          # 3. 将 Python 脚本写入一个临时文件，以避免所有引号问题
           cat << 'EOF' > converter.py
-          import yaml, sys, os
+          import yaml, sys
           def parse_proxy(proxy):
               if not proxy or not isinstance(proxy, dict): return None
               proxy_type = proxy.get('type')
@@ -76,41 +68,26 @@ jobs:
               if sni: params.append(f'sni={sni}')
               if proxy.get('skip-cert-verify', False): params.append('skip-cert-verify=true')
               return f"{name} = {','.join(params)}"
-
           def main():
-              # 从标准输入读取由 shell 传入的内容
               yaml_content = sys.stdin.read()
-              if not yaml_content:
-                  print('Warning: Received empty content.', file=sys.stderr)
-                  return
-
+              if not yaml_content: return
               try:
                   data = yaml.safe_load(yaml_content)
-                  if 'proxies' not in data or not isinstance(data.get('proxies'), list):
-                      print("Warning: 'proxies' list not found. Creating empty output.", file=sys.stderr)
-                      return
-                  
+                  if 'proxies' not in data or not isinstance(data.get('proxies'), list): return
                   for proxy in data['proxies']:
                       if proxy:
                           surge_line = parse_proxy(proxy)
-                          if surge_line:
-                              # 直接打印到标准输出
-                              print(surge_line)
+                          if surge_line: print(surge_line)
               except Exception as e:
-                  print(f'Error processing YAML content: {e}', file=sys.stderr)
+                  print(f'Error processing YAML: {e}', file=sys.stderr)
                   sys.exit(1)
-          
-          if __name__ == '__main__':
-              main()
+          if __name__ == '__main__': main()
           EOF
 
-          # 4. 执行 Python 脚本，将下载的内容通过管道喂给它，并将结果保存到文件
           echo "$YAML_CONTENT" | python converter.py > surge_result.txt
-
-          # 5. 使用新的方法设置输出变量
           echo "output_path=surge_result.txt" >> $GITHUB_ENV
 
-      # --- 步骤 2: 更新 Gist，此部分保持不变 ---
+      # --- 步骤 2: 更新 Gist（已添加 --add 参数） ---
       - name: Update Gist using GitHub CLI
         run: |
-          gh gist edit ${{ env.GIST_ID }} --filename ${{ env.SURGE_FILENAME }} ${{ env.output_path }}
+          gh gist edit ${{ env.GIST_ID }} --add --filename ${{ env.SURGE_FILENAME }} ${{ env.output_path }}
