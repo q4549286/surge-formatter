@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/convert.yml (最终修复版 v3)
+# 文件名: .github/workflows/convert.yml (最终正确版)
 
 name: Convert Gist YAML to Surge Format
 
@@ -14,7 +14,7 @@ jobs:
     env:
       GIST_ID: "41d83386c3f8a59a928e74c78d48cef1"
       YAML_FILENAME: "all.yaml"
-      SURGE_FILENAME: "surge_config.txt"
+      SURGE_FILENAME: "surge_config.txt" # 这是我们想要的最终文件名
       GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
@@ -29,16 +29,19 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
-      - name: Fetch, Convert, and Set Output
+      - name: Fetch and Convert
         run: |
+          # 1. 可靠地获取 Gist 文件的下载 URL
           YAML_URL=$(gh api "gists/${{ env.GIST_ID }}" --jq ".files[\"${{ env.YAML_FILENAME }}\"].raw_url")
           if [ -z "$YAML_URL" ] || [ "$YAML_URL" == "null" ]; then
             echo "Error: Could not find file '${{ env.YAML_FILENAME }}' in Gist or get its URL."
             exit 1
           fi
-          echo "Found YAML file URL: $YAML_URL"
+          
+          # 2. 下载文件内容
           YAML_CONTENT=$(curl -sL "$YAML_URL")
 
+          # 3. 创建 Python 转换脚本文件
           cat << 'EOF' > converter.py
           import yaml, sys
           def parse_proxy(proxy):
@@ -84,10 +87,13 @@ jobs:
           if __name__ == '__main__': main()
           EOF
 
-          echo "$YAML_CONTENT" | python converter.py > surge_result.txt
-          echo "output_path=surge_result.txt" >> $GITHUB_ENV
+          # 4. 执行转换，并直接生成我们想要的最终文件名
+          echo "$YAML_CONTENT" | python converter.py > ${{ env.SURGE_FILENAME }}
+          
+          echo "Conversion successful. Created ${{ env.SURGE_FILENAME }}"
 
-      # --- 步骤 2: 更新 Gist（已添加 --add 参数） ---
       - name: Update Gist using GitHub CLI
         run: |
-          gh gist edit ${{ env.GIST_ID }} --add --filename ${{ env.SURGE_FILENAME }} ${{ env.output_path }}
+          # 5. 使用最简单、最正确的 gh 命令来上传/更新文件
+          # 这个命令会自动处理创建新文件和更新旧文件两种情况
+          gh gist edit ${{ env.GIST_ID }} ${{ env.SURGE_FILENAME }}
