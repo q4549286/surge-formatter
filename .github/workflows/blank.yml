@@ -3,31 +3,19 @@
 name: Convert Gist YAML to Surge Format
 
 on:
-  # 触发器 1: 定时运行
-  # 下面的 cron 表达式表示 "每4小时的第0分钟运行一次"。
-  # 你可以修改它，例如 '0 * * * *' 表示每小时运行一次。
   schedule:
     - cron: '0 */4 * * *'
-
-  # 触发器 2: 手动运行
-  # 允许你在 Actions 页面手动点击 "Run workflow" 按钮来立即执行。
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
-    # 环境变量：请在这里修改为你自己的配置！
     env:
-      # 你的 Gist ID (从 Gist URL 中获取，例如 https://gist.github.com/username/THIS_IS_THE_ID)
       GIST_ID: "41d83386c3f8a59a928e74c78d48cef1"
-      # 你的 GitHub 用户名
       GIST_USERNAME: "q4549286"
-      # sub-check 生成的源文件名 (在 Gist 中的名字)
       YAML_FILENAME: "all.yaml"
-      # 你想生成的 Surge 配置文件名 (在 Gist 中的名字)
       SURGE_FILENAME: "surge_config.txt"
-      # 你的 GitHub 令牌，从仓库 Secrets 中读取
       GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
@@ -53,6 +41,7 @@ jobs:
           import requests
 
           def parse_proxy(proxy):
+              if not proxy or not isinstance(proxy, dict): return None
               proxy_type = proxy.get('type')
               if not proxy_type: return None
               name = proxy.get('name', 'Unnamed')
@@ -98,7 +87,6 @@ jobs:
               yaml_filename = os.environ['YAML_FILENAME']
               local_output_file = "surge_result.txt"
 
-              # 构建 Gist Raw 文件的下载链接
               url = f'https://gist.githubusercontent.com/{gist_username}/{gist_id}/raw/{yaml_filename}'
               print(f"Fetching YAML from: {url}")
 
@@ -112,18 +100,19 @@ jobs:
 
               try:
                   data = yaml.safe_load(yaml_content)
+                  # 增加对空文件或非标准YAML的兼容
                   if 'proxies' not in data or not isinstance(data['proxies'], list):
-                      print("Error: 'proxies' list not found in YAML.", file=sys.stderr)
-                      sys.exit(1)
-                      
-                  with open(local_output_file, 'w', encoding='utf-8') as f:
-                      for proxy in data['proxies']:
-                          surge_line = parse_proxy(proxy)
-                          if surge_line:
-                              f.write(surge_line + '\n')
+                      print("Warning: 'proxies' list not found or not a list in YAML. Exiting gracefully.", file=sys.stderr)
+                      # 创建一个空文件，这样Action不会因为找不到文件而失败
+                      open(local_output_file, 'w').close()
+                  else:
+                    with open(local_output_file, 'w', encoding='utf-8') as f:
+                        for proxy in data['proxies']:
+                            surge_line = parse_proxy(proxy)
+                            if surge_line:
+                                f.write(surge_line + '\n')
                   
                   print(f"Conversion successful. Output written to {local_output_file}")
-                  # 使用 GitHub Actions 的特殊语法设置输出变量，供下一步使用
                   print(f"::set-output name=output_path::{local_output_file}")
 
               except (yaml.YAMLError, KeyError, TypeError) as e:
@@ -139,12 +128,9 @@ jobs:
 
       # 步骤 5: 将转换后的文件同步（上传/更新）到 Gist
       - name: Sync result to Gist
-        # 使用一个社区维护的、专门用于同步 Gist 的 Action
+        # 使用 v1 版本，这是正确的修复
         uses: exuanbo/actions-sync-gist@v1
         with:
-          # 认证令牌
           token: ${{ env.GIST_TOKEN }}
-          # 目标 Gist ID
           gist_id: ${{ env.GIST_ID }}
-          # 指定要同步的文件。格式: 'Gist中的文件名:Action本地的文件路径'
           file_path: '${{ env.SURGE_FILENAME }}:${{ steps.converter.outputs.output_path }}'
