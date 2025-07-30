@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/convert.yml
+# 文件名: .github/workflows/convert.yml (最终版)
 
 name: Convert Gist YAML to Surge Format
 
@@ -11,12 +11,15 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
+    # 环境变量保持不变
     env:
       GIST_ID: "41d83386c3f8a59a928e74c78d48cef1"
       GIST_USERNAME: "q4549286"
       YAML_FILENAME: "all.yaml"
       SURGE_FILENAME: "surge_config.txt"
-      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      # GH CLI 需要一个名为 GITHUB_TOKEN 的环境变量来进行认证
+      # 我们将你的 secret 赋给它
+      GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -30,36 +33,26 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml requests
 
+      # Python 转换脚本部分保持不变，它工作得很好
       - name: Run Python Converter to process Gist file
         id: converter
         run: |
-          # 在 Action 运行环境中动态创建 Python 脚本
           cat << 'EOF' > converter.py
-          import yaml
-          import sys
-          import os
-          import requests
-
+          import yaml, sys, os, requests
           def parse_proxy(proxy):
               if not proxy or not isinstance(proxy, dict): return None
               proxy_type = proxy.get('type')
               if not proxy_type: return None
               name = proxy.get('name', 'Unnamed')
-              
               params = [proxy_type, str(proxy.get('server', '')), str(proxy.get('port', ''))]
-
-              # 根据不同类型添加关键参数
               if proxy_type == 'trojan':
                   params.append(f"password={proxy.get('password', '')}")
               elif proxy_type in ['vless', 'vmess']:
                   params.append(f"uuid={proxy.get('uuid', '')}")
-                  if proxy_type == 'vmess':
-                      params.append(f"alterId={proxy.get('alterId', '0')}")
+                  if proxy_type == 'vmess': params.append(f"alterId={proxy.get('alterId', '0')}")
               elif proxy_type == 'hysteria2':
                   auth_pass = proxy.get('password') or proxy.get('auth') or proxy.get('auth-str') or ""
                   params.append(f"password={auth_pass}")
-              
-              # 处理网络和加密设置
               if proxy.get('network') == 'ws':
                   params.append('ws=true')
                   ws_opts = proxy.get('ws-opts', {})
@@ -68,69 +61,42 @@ jobs:
                   if 'headers' in ws_opts and 'Host' in ws_opts['headers']:
                       host = ws_opts['headers']['Host']
                       params.append(f'ws-headers=Host:{host}')
-              
-              if proxy.get('tls', False):
-                  params.append('tls=true')
-
+              if proxy.get('tls', False): params.append('tls=true')
               sni = proxy.get('sni') or proxy.get('servername')
-              if sni:
-                  params.append(f'sni={sni}')
-
-              if proxy.get('skip-cert-verify', False):
-                  params.append('skip-cert-verify=true')
-              
+              if sni: params.append(f'sni={sni}')
+              if proxy.get('skip-cert-verify', False): params.append('skip-cert-verify=true')
               return f'{name} = {",".join(params)}'
-
           def main():
-              gist_id = os.environ['GIST_ID']
-              gist_username = os.environ['GIST_USERNAME']
-              yaml_filename = os.environ['YAML_FILENAME']
-              local_output_file = "surge_result.txt"
-
+              gist_id, gist_username, yaml_filename, local_output_file = os.environ['GIST_ID'], os.environ['GIST_USERNAME'], os.environ['YAML_FILENAME'], "surge_result.txt"
               url = f'https://gist.githubusercontent.com/{gist_username}/{gist_id}/raw/{yaml_filename}'
               print(f"Fetching YAML from: {url}")
-
               try:
                   response = requests.get(url, timeout=20)
                   response.raise_for_status()
                   yaml_content = response.text
               except requests.exceptions.RequestException as e:
-                  print(f"Error fetching Gist file: {e}", file=sys.stderr)
-                  sys.exit(1)
-
+                  print(f"Error fetching Gist file: {e}", file=sys.stderr); sys.exit(1)
               try:
                   data = yaml.safe_load(yaml_content)
-                  # 增加对空文件或非标准YAML的兼容
-                  if 'proxies' not in data or not isinstance(data['proxies'], list):
-                      print("Warning: 'proxies' list not found or not a list in YAML. Exiting gracefully.", file=sys.stderr)
-                      # 创建一个空文件，这样Action不会因为找不到文件而失败
+                  if 'proxies' not in data or not isinstance(data.get('proxies'), list):
+                      print("Warning: 'proxies' list not found. Creating empty output.", file=sys.stderr)
                       open(local_output_file, 'w').close()
                   else:
-                    with open(local_output_file, 'w', encoding='utf-8') as f:
-                        for proxy in data['proxies']:
-                            surge_line = parse_proxy(proxy)
-                            if surge_line:
-                                f.write(surge_line + '\n')
-                  
+                      with open(local_output_file, 'w', encoding='utf-8') as f:
+                          for proxy in data['proxies']:
+                              surge_line = parse_proxy(proxy)
+                              if surge_line: f.write(surge_line + '\n')
                   print(f"Conversion successful. Output written to {local_output_file}")
                   print(f"::set-output name=output_path::{local_output_file}")
-
-              except (yaml.YAMLError, KeyError, TypeError) as e:
-                  print(f"Error processing YAML content: {e}", file=sys.stderr)
-                  sys.exit(1)
-
-          if __name__ == "__main__":
-              main()
+              except Exception as e:
+                  print(f"Error processing YAML content: {e}", file=sys.stderr); sys.exit(1)
+          if __name__ == "__main__": main()
           EOF
-
-          # 运行刚刚创建的 Python 脚本
           python converter.py
 
-      # 步骤 5: 将转换后的文件同步（上传/更新）到 Gist
-      - name: Sync result to Gist
-        # 使用 v1 版本，这是正确的修复
-        uses: exuanbo/actions-sync-gist@v1
-        with:
-          token: ${{ env.GIST_TOKEN }}
-          gist_id: ${{ env.GIST_ID }}
-          file_path: '${{ env.SURGE_FILENAME }}:${{ steps.converter.outputs.output_path }}'
+      # ##################################################################
+      # 变化在这里：我们用 GitHub CLI 替换了失败的第三方 Action
+      # ##################################################################
+      - name: Update Gist using GitHub CLI
+        run: |
+          gh gist edit ${{ env.GIST_ID }} --filename ${{ env.SURGE_FILENAME }} ${{ steps.converter.outputs.output_path }}
