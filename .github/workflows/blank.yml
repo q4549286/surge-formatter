@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/convert.yml (最终版)
+# 文件名: .github/workflows/convert.yml (最终修复版)
 
 name: Convert Gist YAML to Surge Format
 
@@ -11,14 +11,11 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
-    # 环境变量保持不变
     env:
       GIST_ID: "41d83386c3f8a59a928e74c78d48cef1"
-      GIST_USERNAME: "q4549286"
       YAML_FILENAME: "all.yaml"
       SURGE_FILENAME: "surge_config.txt"
-      # GH CLI 需要一个名为 GITHUB_TOKEN 的环境变量来进行认证
-      # 我们将你的 secret 赋给它
+      # 使用 GITHUB_TOKEN 是 gh 命令的标准做法
       GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
@@ -31,14 +28,20 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pyyaml requests
+        run: pip install pyyaml
 
-      # Python 转换脚本部分保持不变，它工作得很好
-      - name: Run Python Converter to process Gist file
-        id: converter
+      # --- 步骤 1: 获取 Gist 内容并执行转换 ---
+      - name: Fetch Gist and Run Python Converter
+        id: converter # 给步骤一个id，以便后续引用其输出
         run: |
-          cat << 'EOF' > converter.py
-          import yaml, sys, os, requests
+          # 1. 使用官方 gh cli 可靠地获取 Gist 文件内容，并将其通过管道 (|) 传递给 Python 脚本
+          # 2. Python 脚本从标准输入 (stdin) 读取内容，不再需要自己下载
+          # 3. 这彻底解决了 "404 Not Found" 的问题
+          gh gist view ${{ env.GIST_ID }} --file ${{ env.YAML_FILENAME }} --raw | \
+          python -c "
+          import yaml, sys, os
+
+          # Python 脚本本身保持不变，但现在从 sys.stdin 读取输入
           def parse_proxy(proxy):
               if not proxy or not isinstance(proxy, dict): return None
               proxy_type = proxy.get('type')
@@ -46,13 +49,13 @@ jobs:
               name = proxy.get('name', 'Unnamed')
               params = [proxy_type, str(proxy.get('server', '')), str(proxy.get('port', ''))]
               if proxy_type == 'trojan':
-                  params.append(f"password={proxy.get('password', '')}")
+                  params.append(f\"password={proxy.get('password', '')}\")
               elif proxy_type in ['vless', 'vmess']:
-                  params.append(f"uuid={proxy.get('uuid', '')}")
-                  if proxy_type == 'vmess': params.append(f"alterId={proxy.get('alterId', '0')}")
+                  params.append(f\"uuid={proxy.get('uuid', '')}\")
+                  if proxy_type == 'vmess': params.append(f\"alterId={proxy.get('alterId', '0')}\")
               elif proxy_type == 'hysteria2':
-                  auth_pass = proxy.get('password') or proxy.get('auth') or proxy.get('auth-str') or ""
-                  params.append(f"password={auth_pass}")
+                  auth_pass = proxy.get('password') or proxy.get('auth') or proxy.get('auth-str') or \"\"
+                  params.append(f\"password={auth_pass}\")
               if proxy.get('network') == 'ws':
                   params.append('ws=true')
                   ws_opts = proxy.get('ws-opts', {})
@@ -65,38 +68,41 @@ jobs:
               sni = proxy.get('sni') or proxy.get('servername')
               if sni: params.append(f'sni={sni}')
               if proxy.get('skip-cert-verify', False): params.append('skip-cert-verify=true')
-              return f'{name} = {",".join(params)}'
+              return f'{name} = {', '.join(params)}'
+
           def main():
-              gist_id, gist_username, yaml_filename, local_output_file = os.environ['GIST_ID'], os.environ['GIST_USERNAME'], os.environ['YAML_FILENAME'], "surge_result.txt"
-              url = f'https://gist.githubusercontent.com/{gist_username}/{gist_id}/raw/{yaml_filename}'
-              print(f"Fetching YAML from: {url}")
+              local_output_file = 'surge_result.txt'
               try:
-                  response = requests.get(url, timeout=20)
-                  response.raise_for_status()
-                  yaml_content = response.text
-              except requests.exceptions.RequestException as e:
-                  print(f"Error fetching Gist file: {e}", file=sys.stderr); sys.exit(1)
-              try:
+                  # 从标准输入读取由 gh 命令传入的内容
+                  yaml_content = sys.stdin.read()
+                  if not yaml_content:
+                      print('Warning: Received empty content from Gist.', file=sys.stderr)
+                      open(local_output_file, 'w').close()
+                      return
+
                   data = yaml.safe_load(yaml_content)
                   if 'proxies' not in data or not isinstance(data.get('proxies'), list):
-                      print("Warning: 'proxies' list not found. Creating empty output.", file=sys.stderr)
+                      print(\"Warning: 'proxies' list not found. Creating empty output.\", file=sys.stderr)
                       open(local_output_file, 'w').close()
                   else:
                       with open(local_output_file, 'w', encoding='utf-8') as f:
                           for proxy in data['proxies']:
-                              surge_line = parse_proxy(proxy)
-                              if surge_line: f.write(surge_line + '\n')
-                  print(f"Conversion successful. Output written to {local_output_file}")
-                  print(f"::set-output name=output_path::{local_output_file}")
+                              if proxy: # 增加一个检查，防止列表中的空项导致错误
+                                  surge_line = parse_proxy(proxy)
+                                  if surge_line: f.write(surge_line + '\\n')
+                  print(f'Conversion successful. Output written to {local_output_file}')
               except Exception as e:
-                  print(f"Error processing YAML content: {e}", file=sys.stderr); sys.exit(1)
-          if __name__ == "__main__": main()
-          EOF
-          python converter.py
+                  print(f'Error processing YAML content: {e}', file=sys.stderr); sys.exit(1)
+          
+          if __name__ == '__main__':
+              main()
+          " > surge_result.txt # 将Python脚本的打印输出重定向到结果文件
 
-      # ##################################################################
-      # 变化在这里：我们用 GitHub CLI 替换了失败的第三方 Action
-      # ##################################################################
+          # --- 步骤 2: 使用新的方法设置输出变量 ---
+          # 这修复了 set-output 的弃用警告
+          echo "output_path=surge_result.txt" >> $GITHUB_ENV
+          
+      # --- 步骤 3: 更新 Gist，此部分保持不变 ---
       - name: Update Gist using GitHub CLI
         run: |
-          gh gist edit ${{ env.GIST_ID }} --filename ${{ env.SURGE_FILENAME }} ${{ steps.converter.outputs.output_path }}
+          gh gist edit ${{ env.GIST_ID }} --filename ${{ env.SURGE_FILENAME }} ${{ env.output_path }}
