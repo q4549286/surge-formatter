@@ -140,7 +140,7 @@ jobs:
       # 步骤 5: 将转换后的文件同步（上传/更新）到 Gist
       - name: Sync result to Gist
         # 使用一个社区维护的、专门用于同步 Gist 的 Action
-        uses: exuanbo/actions-sync-gist@v2
+        uses: exuanbo/actions-sync-gist@v1
         with:
           # 认证令牌
           token: ${{ env.GIST_TOKEN }}
