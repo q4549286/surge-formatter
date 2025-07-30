@@ -1,4 +1,4 @@
-# 文件名: .github/workflows/convert.yml (最终正确版)
+# 文件名: .github/workflows/convert.yml (API 直连最终版)
 
 name: Convert Gist YAML to Surge Format
 
@@ -14,7 +14,7 @@ jobs:
     env:
       GIST_ID: "41d83386c3f8a59a928e74c78d48cef1"
       YAML_FILENAME: "all.yaml"
-      SURGE_FILENAME: "surge_config.txt" # 这是我们想要的最终文件名
+      SURGE_FILENAME: "surge_config.txt"
       GITHUB_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
@@ -27,7 +27,10 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install pyyaml
+        run: |
+          pip install pyyaml
+          # jq 是一个处理 JSON 的强大工具，GitHub Actions Runner 自带，无需安装
+          # 但为了保险起见，可以加上 sudo apt-get install -y jq
 
       - name: Fetch and Convert
         run: |
@@ -89,11 +92,31 @@ jobs:
 
           # 4. 执行转换，并直接生成我们想要的最终文件名
           echo "$YAML_CONTENT" | python converter.py > ${{ env.SURGE_FILENAME }}
-          
-          echo "Conversion successful. Created ${{ env.SURGE_FILENAME }}"
+          echo "Conversion successful. Created local file: ${{ env.SURGE_FILENAME }}"
 
-      - name: Update Gist using GitHub CLI
+      # ##################################################################
+      # 最终解决方案：直接调用 GitHub API 来更新 Gist
+      # ##################################################################
+      - name: Update Gist using GitHub API
         run: |
-          # 5. 使用最简单、最正确的 gh 命令来上传/更新文件
-          # 这个命令会自动处理创建新文件和更新旧文件两种情况
-          gh gist edit ${{ env.GIST_ID }} ${{ env.SURGE_FILENAME }}
+          # 1. 将文件内容读入一个变量
+          FILE_CONTENT=$(cat ${{ env.SURGE_FILENAME }})
+
+          # 2. 使用 jq 工具将文件内容安全地转换为 JSON 字符串格式 (处理引号、换行等)
+          # -R 表示读取原始字符串, -s 表示将所有输入合并成一个单一的字符串
+          JSON_CONTENT=$(jq -R -s . ${{ env.SURGE_FILENAME }})
+
+          # 3. 构建 API 请求的 JSON 主体
+          # 格式为：{"files": {"你的文件名": {"content": "你的文件内容"}}}
+          JSON_PAYLOAD=$(printf '{"files":{"%s":{"content":%s}}}' "${{ env.SURGE_FILENAME }}" "$JSON_CONTENT")
+          
+          echo "Updating Gist with new content..."
+          # 4. 使用 gh api 发送 PATCH 请求来更新 Gist
+          # --method PATCH: 指定 HTTP 方法
+          # --input -: 表示从标准输入读取请求的主体
+          echo "$JSON_PAYLOAD" | gh api \
+            --method PATCH \
+            "/gists/${{ env.GIST_ID }}" \
+            --input -
+            
+          echo "Gist update completed successfully."
